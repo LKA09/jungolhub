@@ -1,5 +1,6 @@
 const $ = (id) => document.getElementById(id);
 const fields = ['repository', 'rootFolder', 'branch'];
+const DEBUG_KEY = 'jungolhubDebugLogs';
 
 function status(text, error = false) {
   const el = $('status');
@@ -7,11 +8,28 @@ function status(text, error = false) {
   el.style.color = error ? '#d1242f' : '#1a7f37';
 }
 
+async function renderLogs() {
+  const stored = await chrome.storage.local.get({ [DEBUG_KEY]: [] });
+  const logs = stored[DEBUG_KEY] || [];
+  if (!logs.length) {
+    $('debugLogs').textContent = '로그 없음';
+    return;
+  }
+  $('debugLogs').textContent = logs.slice(-25).map((entry) => {
+    const t = entry.at ? new Date(entry.at).toLocaleTimeString() : '';
+    const data = entry.data && Object.keys(entry.data).length ? ` ${JSON.stringify(entry.data)}` : '';
+    return `[${t}] ${entry.stage}${data}`;
+  }).join('\n');
+  $('debugLogs').scrollTop = $('debugLogs').scrollHeight;
+}
+
 async function load() {
   const response = await chrome.runtime.sendMessage({ type: 'GET_SETTINGS' });
-  if (!response?.ok) return;
-  for (const field of fields) $(field).value = response.settings?.[field] || '';
-  if (response.settings?.hasToken) $('token').placeholder = '저장된 토큰 있음 — 변경 시 새 토큰 입력';
+  if (response?.ok) {
+    for (const field of fields) $(field).value = response.settings?.[field] || '';
+    if (response.settings?.hasToken) $('token').placeholder = '저장된 토큰 있음 — 변경 시 새 토큰 입력';
+  }
+  await renderLogs();
 }
 
 async function currentSettings(includeStoredToken = true) {
@@ -39,6 +57,16 @@ $('test').addEventListener('click', async () => {
   const response = await chrome.runtime.sendMessage({ type: 'TEST_CONNECTION', payload });
   if (response?.ok) status(`연결 성공: ${response.fullName} (${response.defaultBranch})`);
   else status(response?.error || '연결 실패', true);
+});
+
+$('refreshLogs').addEventListener('click', renderLogs);
+$('clearLogs').addEventListener('click', async () => {
+  await chrome.storage.local.set({ [DEBUG_KEY]: [] });
+  await renderLogs();
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes[DEBUG_KEY]) renderLogs();
 });
 
 load();
