@@ -2,11 +2,12 @@
   "manifest_version": 3,
   "name": "JungolHub",
   "description": "Automatically upload accepted JUNGOL solutions to GitHub.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "minimum_chrome_version": "111",
   "permissions": ["storage"],
   "host_permissions": [
     "https://jungol.co.kr/*",
+    "https://www.jungol.co.kr/*",
     "https://api.github.com/*"
   ],
   "action": {
@@ -19,13 +20,13 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://jungol.co.kr/*"],
+      "matches": ["https://jungol.co.kr/*", "https://www.jungol.co.kr/*"],
       "js": ["page-hook.js"],
       "run_at": "document_start",
       "world": "MAIN"
     },
     {
-      "matches": ["https://jungol.co.kr/*"],
+      "matches": ["https://jungol.co.kr/*", "https://www.jungol.co.kr/*"],
       "js": ["content.js"],
       "run_at": "document_start"
     }
