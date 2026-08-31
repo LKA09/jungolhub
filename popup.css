@@ -1,0 +1,15 @@
+:root { color-scheme: light dark; font-family: Inter, system-ui, sans-serif; }
+body { margin: 0; width: 390px; background: Canvas; color: CanvasText; }
+main { padding: 18px; }
+h1 { margin: 0; font-size: 22px; }
+.sub { margin: 6px 0 18px; opacity: .72; }
+label { display: block; font-size: 13px; font-weight: 650; margin: 12px 0; }
+input { box-sizing: border-box; width: 100%; margin-top: 6px; padding: 9px 10px; border: 1px solid color-mix(in srgb, CanvasText 22%, transparent); border-radius: 8px; background: Canvas; color: CanvasText; }
+small { display: block; margin-top: 5px; opacity: .62; font-weight: 400; line-height: 1.35; }
+.row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.buttons { display: flex; gap: 8px; margin-top: 16px; }
+button { border: 0; border-radius: 8px; padding: 9px 13px; cursor: pointer; background: #238636; color: white; font-weight: 700; }
+button.secondary { background: #57606a; }
+#status { min-height: 20px; font-size: 12px; margin: 10px 0 0; }
+hr { border: 0; border-top: 1px solid color-mix(in srgb, CanvasText 16%, transparent); margin: 15px 0; }
+.help { font-size: 12px; line-height: 1.5; opacity: .7; margin: 0; }
