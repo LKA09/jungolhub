@@ -58,7 +58,7 @@ function queueRegistration() {
   return registration;
 }
 
-await debug('service-worker-ready', { version: chrome.runtime.getManifest().version });
+debug('service-worker-ready', { version: chrome.runtime.getManifest().version });
 queueRegistration();
 chrome.runtime.onInstalled.addListener(() => queueRegistration());
 chrome.runtime.onStartup.addListener(() => queueRegistration());
