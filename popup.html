@@ -8,7 +8,7 @@
 </head>
 <body>
   <main>
-    <h1>JungolHub</h1>
+    <h1>JungolHub <small style="font-size:12px;font-weight:500;opacity:.6">v0.2.0</small></h1>
     <p class="sub">정올 정답 코드를 GitHub에 자동 저장합니다.</p>
 
     <label>
@@ -40,7 +40,12 @@
     <p id="status" aria-live="polite"></p>
 
     <hr />
-    <p class="help">설정 후 jungol.co.kr에서 문제를 제출하세요. 정답 판정을 감지하면 자동으로 커밋합니다.</p>
+    <p class="help"><strong>디버그 로그</strong> — 문제 제출 후 아래 마지막 줄들을 보내주면 어느 단계에서 막혔는지 바로 확인할 수 있습니다.</p>
+    <div class="buttons">
+      <button id="refreshLogs" class="secondary">로그 새로고침</button>
+      <button id="clearLogs" class="secondary">로그 지우기</button>
+    </div>
+    <pre id="debugLogs" style="white-space:pre-wrap;word-break:break-all;max-height:220px;overflow:auto;font-size:10px;line-height:1.45;background:#f6f8fa;padding:8px;border-radius:8px;border:1px solid #d0d7de">로그 없음</pre>
   </main>
   <script src="popup.js"></script>
 </body>
