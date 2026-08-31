@@ -69,10 +69,12 @@ async function githubRequest(path, { method = 'GET', token, body } = {}) {
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
 
   if (!response.ok) {
-    const message = data?.message || `GitHub API ${response.status}`;
-    const error = new Error(message);
+    const apiMessage = data?.message || `GitHub API ${response.status}`;
+    const error = new Error(`${apiMessage} [${method} ${path}]`);
     error.status = response.status;
     error.data = data;
+    error.path = path;
+    error.method = method;
     throw error;
   }
   return data;
@@ -83,7 +85,7 @@ function buildReadme(problem, language) {
     `# [JUNGOL ${problem.id}](${problem.url}) ${problem.title}`,
     '',
     `- 언어: ${language || 'Unknown'}`,
-    problem.time ? `- 시간 제한: ${problem.time}s` : null,
+    problem.time ? `- 시간 제한: ${problem.time}` : null,
     problem.memory ? `- 메모리 제한: ${problem.memory}` : null,
     '',
     '## 문제',
@@ -98,110 +100,80 @@ function buildReadme(problem, language) {
     '',
     problem.output || 'JUNGOL 원문을 참고하세요.',
     '',
-    `> 자동 업로드: JungolHub`
+    '> 자동 업로드: JungolHub'
   ];
   return lines.filter((line) => line !== null).join('\n');
 }
 
-async function createAtomicCommit({ repository, token, branch, files, message }) {
-  const ref = await githubRequest(`/repos/${repository}/git/ref/heads/${encodeURIComponent(branch)}`, { token });
-  const parentSha = ref.object.sha;
-  const parentCommit = await githubRequest(`/repos/${repository}/git/commits/${parentSha}`, { token });
-
-  const tree = [];
-  for (const file of files) {
-    const blob = await githubRequest(`/repos/${repository}/git/blobs`, {
-      method: 'POST', token,
-      body: { content: toBase64(file.content), encoding: 'base64' }
-    });
-    tree.push({ path: file.path, mode: '100644', type: 'blob', sha: blob.sha });
-  }
-
-  const nextTree = await githubRequest(`/repos/${repository}/git/trees`, {
-    method: 'POST', token,
-    body: { base_tree: parentCommit.tree.sha, tree }
-  });
-
-  const commit = await githubRequest(`/repos/${repository}/git/commits`, {
-    method: 'POST', token,
-    body: { message, tree: nextTree.sha, parents: [parentSha] }
-  });
-
-  await githubRequest(`/repos/${repository}/git/refs/heads/${encodeURIComponent(branch)}`, {
-    method: 'PATCH', token,
-    body: { sha: commit.sha, force: false }
-  });
-  return commit.sha;
+function encodeRepoPath(path) {
+  return path.split('/').map(encodeURIComponent).join('/');
 }
 
 async function putContentFile({ repository, token, branch, path, content, message }) {
+  const encodedPath = encodeRepoPath(path);
+  const query = branch ? `?ref=${encodeURIComponent(branch)}` : '';
   let existingSha = null;
+
   try {
-    const query = branch ? `?ref=${encodeURIComponent(branch)}` : '';
-    const existing = await githubRequest(`/repos/${repository}/contents/${path.split('/').map(encodeURIComponent).join('/')}${query}`, { token });
+    const existing = await githubRequest(`/repos/${repository}/contents/${encodedPath}${query}`, { token });
     existingSha = existing?.sha || null;
   } catch (error) {
     if (error.status !== 404) throw error;
   }
 
-  const body = { message, content: toBase64(content) };
+  const body = {
+    message,
+    content: toBase64(content)
+  };
   if (branch) body.branch = branch;
   if (existingSha) body.sha = existingSha;
 
-  return githubRequest(`/repos/${repository}/contents/${path.split('/').map(encodeURIComponent).join('/')}`, {
-    method: 'PUT', token, body
+  return githubRequest(`/repos/${repository}/contents/${encodedPath}`, {
+    method: 'PUT',
+    token,
+    body
   });
 }
 
 async function uploadSolution(payload) {
   const settings = await getSettings();
   if (!settings.token) throw new Error('GitHub 토큰이 설정되지 않았습니다.');
-  if (!/^[^/\s]+\/[^/\s]+$/.test(settings.repository)) throw new Error('저장소를 owner/repo 형식으로 설정하세요.');
+  if (!/^[^/\s]+\/[^/\s]+$/.test(settings.repository)) {
+    throw new Error('저장소를 owner/repo 형식으로 설정하세요.');
+  }
 
   const previous = await chrome.storage.local.get({ lastUploadKey: '' });
   if (previous.lastUploadKey === payload.key) return { ok: true, skipped: true };
 
   const repoInfo = await githubRequest(`/repos/${settings.repository}`, { token: settings.token });
+  if (repoInfo.permissions && repoInfo.permissions.push === false) {
+    throw new Error('이 토큰은 대상 저장소에 쓰기(push) 권한이 없습니다.');
+  }
+
   const branch = settings.branch || repoInfo.default_branch || 'main';
   const folder = [
     sanitizePathPart(settings.rootFolder || 'JUNGOL'),
     `${sanitizePathPart(payload.problem.id)}. ${sanitizePathPart(payload.problem.title)}`
   ].join('/');
   const ext = languageExtension(payload.language);
+  const message = `[JUNGOL] ${payload.problem.id}. ${payload.problem.title}`;
 
   const files = [
     { path: `${folder}/README.md`, content: buildReadme(payload.problem, payload.language) },
     { path: `${folder}/${payload.problem.id}.${ext}`, content: payload.code }
   ];
-  const message = `[JUNGOL] ${payload.problem.id}. ${payload.problem.title}`;
 
-  try {
-    await createAtomicCommit({
+  // Fine-grained PAT과 가장 호환성이 높은 repository contents API만 사용한다.
+  // GitHub 문서 권고대로 파일 쓰기는 직렬로 실행한다.
+  for (const file of files) {
+    await putContentFile({
       repository: settings.repository,
       token: settings.token,
       branch,
-      files,
+      path: file.path,
+      content: file.content,
       message
     });
-  } catch (error) {
-    // Empty repositories do not have a git ref yet. Contents API can bootstrap them.
-    const isEmptyRepo = repoInfo.size === 0 && [404, 409].includes(error.status);
-    if (!isEmptyRepo) {
-      if (settings.branch && error.status === 404) {
-        throw new Error(`브랜치 '${settings.branch}'를 찾을 수 없습니다.`);
-      }
-      throw error;
-    }
-    for (const file of files) {
-      await putContentFile({
-        repository: settings.repository,
-        token: settings.token,
-        branch: '',
-        path: file.path,
-        content: file.content,
-        message
-      });
-    }
   }
 
   await chrome.storage.local.set({
@@ -213,14 +185,28 @@ async function uploadSolution(payload) {
       at: new Date().toISOString()
     }
   });
+
   return { ok: true, skipped: false };
 }
 
 async function testConnection(settings) {
   if (!settings.token) throw new Error('토큰을 입력하세요.');
-  if (!/^[^/\s]+\/[^/\s]+$/.test(settings.repository)) throw new Error('저장소는 owner/repo 형식이어야 합니다.');
+  if (!/^[^/\s]+\/[^/\s]+$/.test(settings.repository)) {
+    throw new Error('저장소는 owner/repo 형식이어야 합니다.');
+  }
+
   const repo = await githubRequest(`/repos/${settings.repository}`, { token: settings.token });
-  return { ok: true, fullName: repo.full_name, defaultBranch: repo.default_branch, private: repo.private };
+  if (repo.permissions && repo.permissions.push === false) {
+    throw new Error('저장소 읽기는 가능하지만 쓰기 권한이 없습니다.');
+  }
+
+  return {
+    ok: true,
+    fullName: repo.full_name,
+    defaultBranch: repo.default_branch,
+    private: repo.private,
+    push: repo.permissions?.push !== false
+  };
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -255,7 +241,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       sendResponse({ ok: false, error: 'Unknown message' });
     } catch (error) {
       console.error('[JungolHub]', error);
-      sendResponse({ ok: false, error: error.message || String(error), status: error.status });
+      sendResponse({
+        ok: false,
+        error: error.message || String(error),
+        status: error.status,
+        path: error.path,
+        method: error.method
+      });
     }
   })();
   return true;
