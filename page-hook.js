@@ -4,10 +4,9 @@
   if (window.__JUNGOLHUB_HOOKED__) return;
   window.__JUNGOLHUB_HOOKED__ = true;
 
-  const REQUEST_HINT = /submit|submission|judge|solution|answer|code/i;
-  const RESULT_HINT = /submit|submission|judge|result|status|record|solution/i;
-  const ACCEPTED_TEXT = /(^|[^a-z])(accepted|correct|ac)([^a-z]|$)|정답|맞았습니다|통과/i;
-  const WRONG_TEXT = /wrong answer|틀렸|오답|compile error|컴파일|runtime error|런타임|time limit|시간 초과|memory limit|메모리 초과/i;
+  const REQUEST_HINT = /submit|submission|judge|solution|answer|code|grade|run/i;
+  const ACCEPTED_TEXT = /(?:^|\b)(?:accepted|correct|ac)(?:\b|$)|맞았습니다(?:!|！)*|(?:^|\s)정답(?:입니다)?(?:!|！)*(?:\s|$)|통과(?:했습니다)?(?:!|！)*/i;
+  const WRONG_TEXT = /wrong answer|틀렸|오답|compile error|컴파일|runtime error|런타임|time limit|시간 초과|memory limit|메모리 초과|output limit|출력 초과/i;
   let lastSubmissionAt = 0;
 
   const post = (type, payload = {}) => {
@@ -35,17 +34,15 @@
     return { raw: String(value) };
   };
 
-  const pickDeep = (root, keys, maxDepth = 5) => {
+  const pickDeep = (root, keys, maxDepth = 6) => {
     const wanted = new Set(keys.map((key) => key.toLowerCase()));
     const seen = new WeakSet();
     let found;
 
     const walk = (node, depth) => {
-      if (found !== undefined || depth > maxDepth || node == null) return;
-      if (typeof node !== 'object') return;
+      if (found !== undefined || depth > maxDepth || node == null || typeof node !== 'object') return;
       if (seen.has(node)) return;
       seen.add(node);
-
       for (const [key, value] of Object.entries(node)) {
         if (wanted.has(key.toLowerCase()) && typeof value !== 'object' && value != null) {
           found = String(value);
@@ -62,11 +59,9 @@
   const extractSubmission = (body) => {
     const obj = normalizeObject(body);
     if (!obj) return null;
-
-    const code = pickDeep(obj, ['code', 'source', 'sourceCode', 'source_code', 'answer', 'solution', 'content']);
-    const language = pickDeep(obj, ['language', 'lang', 'languageId', 'language_id', 'compiler', 'compilerId']);
-    const problemId = pickDeep(obj, ['problemId', 'problem_id', 'problem', 'pid', 'problemNo', 'problem_no']);
-
+    const code = pickDeep(obj, ['code', 'source', 'sourceCode', 'source_code', 'answer', 'solution', 'content', 'src']);
+    const language = pickDeep(obj, ['language', 'lang', 'languageId', 'language_id', 'compiler', 'compilerId', 'compiler_id']);
+    const problemId = pickDeep(obj, ['problemId', 'problem_id', 'problem', 'pid', 'problemNo', 'problem_no', 'problemIdx', 'problem_idx']);
     if (!code || code.length < 2) return null;
     return { code, language, problemId };
   };
@@ -78,8 +73,7 @@
   };
 
   const inspectResult = (url, text) => {
-    if (!RESULT_HINT.test(url || '') || !text) return;
-    if (!lastSubmissionAt || Date.now() - lastSubmissionAt > 120000) return;
+    if (!text || !lastSubmissionAt || Date.now() - lastSubmissionAt > 5 * 60 * 1000) return;
     const parsed = safeJson(text);
     const haystack = parsed ? JSON.stringify(parsed) : text;
     if (looksAccepted(haystack)) {
@@ -93,15 +87,15 @@
     const method = (init?.method || (typeof input !== 'string' && input?.method) || 'GET').toUpperCase();
 
     try {
-      if (method !== 'GET' && REQUEST_HINT.test(url)) {
+      if (method !== 'GET') {
         let body = init?.body;
         if (!body && typeof input !== 'string' && input instanceof Request) {
           try { body = await input.clone().text(); } catch {}
         }
         const submission = extractSubmission(body);
-        if (submission) {
+        if (submission || REQUEST_HINT.test(url)) {
           lastSubmissionAt = Date.now();
-          post('SUBMISSION_REQUEST', { url, method, ...submission });
+          if (submission) post('SUBMISSION_REQUEST', { url, method, ...submission });
         }
       }
     } catch (error) {
@@ -110,9 +104,12 @@
 
     const response = await originalFetch.apply(this, arguments);
     try {
-      if (RESULT_HINT.test(url)) {
-        const text = await response.clone().text();
-        inspectResult(url, text);
+      if (lastSubmissionAt && Date.now() - lastSubmissionAt < 5 * 60 * 1000) {
+        const type = response.headers?.get?.('content-type') || '';
+        if (/json|text|javascript|html/i.test(type) || !type) {
+          const text = await response.clone().text();
+          inspectResult(url, text);
+        }
       }
     } catch (error) {
       post('DEBUG', { stage: 'fetch-response', message: String(error) });
@@ -132,17 +129,17 @@
   OriginalXHR.prototype.send = function(body) {
     try {
       const meta = this.__jungolhub || {};
-      if (meta.method !== 'GET' && REQUEST_HINT.test(meta.url || '')) {
+      if (meta.method !== 'GET') {
         const submission = extractSubmission(body);
-        if (submission) {
+        if (submission || REQUEST_HINT.test(meta.url || '')) {
           lastSubmissionAt = Date.now();
-          post('SUBMISSION_REQUEST', { ...meta, ...submission });
+          if (submission) post('SUBMISSION_REQUEST', { ...meta, ...submission });
         }
       }
 
       this.addEventListener('load', () => {
         try {
-          if (!RESULT_HINT.test(meta.url || '')) return;
+          if (!lastSubmissionAt || Date.now() - lastSubmissionAt > 5 * 60 * 1000) return;
           const text = typeof this.responseText === 'string' ? this.responseText : '';
           inspectResult(meta.url, text);
         } catch {}
