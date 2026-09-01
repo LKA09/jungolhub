@@ -8,44 +8,86 @@
 </head>
 <body>
   <main>
-    <h1>JungolHub <small style="font-size:12px;font-weight:500;opacity:.6">v0.3.2</small></h1>
-    <p class="sub">정올 정답 코드를 GitHub에 자동 저장합니다.</p>
+    <div class="title-row">
+      <div>
+        <h1>JungolHub <span class="version">v0.4.0</span></h1>
+        <p class="sub">정올 정답을 선택한 GitHub 위치에 자동 저장합니다.</p>
+      </div>
+      <span id="connectionBadge" class="badge muted">연결 안 됨</span>
+    </div>
 
-    <label>
-      GitHub Fine-grained PAT
-      <input id="token" type="password" autocomplete="off" placeholder="github_pat_..." />
-      <small>Repository access에 대상 저장소가 포함되어야 하고, Contents: Read and write 권한이 필요합니다.</small>
-    </label>
-
-    <label>
-      저장소
-      <input id="repository" type="text" placeholder="LKA09/Algorithm" />
-    </label>
-
-    <div class="row">
+    <section class="card">
+      <h2>1. GitHub 연결</h2>
       <label>
-        루트 폴더
-        <input id="rootFolder" type="text" value="JUNGOL" />
+        Fine-grained PAT
+        <input id="token" type="password" autocomplete="off" placeholder="github_pat_..." />
+        <small>토큰은 이 확장 프로그램의 로컬 저장소에만 저장됩니다. Repository access와 Contents: Read and write가 필요합니다.</small>
       </label>
+      <div class="buttons">
+        <button id="connect">GitHub 연결 · 레포 불러오기</button>
+        <button id="disconnect" class="secondary">연결 해제</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>2. 저장 위치 선택</h2>
+
+      <label>
+        저장소
+        <div class="inline">
+          <select id="repository">
+            <option value="">GitHub 연결 후 선택</option>
+          </select>
+          <button id="refreshRepos" class="icon-button secondary" title="레포 새로고침">↻</button>
+        </div>
+      </label>
+
       <label>
         브랜치
-        <input id="branch" type="text" placeholder="기본 브랜치" />
+        <select id="branch">
+          <option value="">기본 브랜치</option>
+        </select>
       </label>
-    </div>
 
-    <div class="buttons">
-      <button id="save">저장</button>
-      <button id="test" class="secondary">연결 테스트</button>
-    </div>
-    <p id="status" aria-live="polite"></p>
+      <div class="folder-picker">
+        <div class="folder-toolbar">
+          <strong>폴더 탐색</strong>
+          <button id="folderUp" class="small-button secondary">상위</button>
+        </div>
+        <div id="breadcrumbs" class="breadcrumbs"></div>
+        <div id="folderList" class="folder-list">
+          <div class="empty">저장소를 선택하면 폴더가 표시됩니다.</div>
+        </div>
+        <div class="current-path">
+          현재 탐색 위치: <code id="currentFolder">/</code>
+          <button id="useCurrentFolder" class="small-button">이 폴더 사용</button>
+        </div>
+      </div>
 
-    <hr />
-    <p class="help"><strong>디버그 로그</strong> — 연결 테스트는 이제 실제 GitHub 쓰기 권한까지 확인합니다. 정올 페이지를 새로고침하면 service-worker-ready, registered-content-scripts, probe-injected가 보여야 합니다.</p>
-    <div class="buttons">
-      <button id="refreshLogs" class="secondary">로그 새로고침</button>
-      <button id="clearLogs" class="secondary">로그 지우기</button>
-    </div>
-    <pre id="debugLogs" style="white-space:pre-wrap;word-break:break-all;max-height:220px;overflow:auto;font-size:10px;line-height:1.45;background:#f6f8fa;padding:8px;border-radius:8px;border:1px solid #d0d7de">로그 없음</pre>
+      <label>
+        저장 폴더
+        <input id="rootFolder" type="text" value="JUNGOL" placeholder="비워두면 저장소 루트" />
+        <small>기존 폴더를 위에서 선택하거나 새 폴더 경로를 직접 입력할 수 있습니다. 예: algorithms/JUNGOL</small>
+      </label>
+
+      <div id="destination" class="destination">저장 위치를 선택하세요.</div>
+
+      <div class="buttons">
+        <button id="save">이 위치로 저장</button>
+        <button id="test" class="secondary">쓰기 권한 테스트</button>
+      </div>
+      <p id="status" aria-live="polite"></p>
+    </section>
+
+    <details>
+      <summary>디버그 로그</summary>
+      <p class="help">정올 페이지 감지와 업로드 단계를 확인할 수 있습니다.</p>
+      <div class="buttons">
+        <button id="refreshLogs" class="secondary">로그 새로고침</button>
+        <button id="clearLogs" class="secondary">로그 지우기</button>
+      </div>
+      <pre id="debugLogs">로그 없음</pre>
+    </details>
   </main>
   <script src="popup.js"></script>
 </body>
