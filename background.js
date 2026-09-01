@@ -16,6 +16,15 @@ function sanitizePathPart(value) {
     .slice(0, 120) || 'Untitled';
 }
 
+function normalizeFolderPath(value) {
+  return String(value || '')
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map(sanitizePathPart)
+    .join('/');
+}
+
 function languageExtension(language = '') {
   const value = String(language).toLowerCase();
   if (/c\+\+|cpp|gnu\+\+/.test(value)) return 'cpp';
@@ -107,7 +116,7 @@ function buildReadme(problem, language) {
 }
 
 function encodeRepoPath(path) {
-  return path.split('/').map(encodeURIComponent).join('/');
+  return path.split('/').filter(Boolean).map(encodeURIComponent).join('/');
 }
 
 async function putContentFile({ repository, token, branch, path, content, message }) {
@@ -133,7 +142,6 @@ async function putContentFile({ repository, token, branch, path, content, messag
 
 async function assertWriteAccess(repository, token) {
   try {
-    // Creates an unreachable Git blob only; it does not change any branch or visible file.
     await githubRequest(`/repos/${repository}/git/blobs`, {
       method: 'POST', token,
       body: { content: 'JungolHub permission probe', encoding: 'utf-8' }
@@ -144,20 +152,108 @@ async function assertWriteAccess(repository, token) {
   }
 }
 
+async function listRepositories(token) {
+  if (!token) throw new Error('먼저 GitHub 토큰을 입력하세요.');
+
+  const repositories = [];
+  for (let page = 1; page <= 10; page += 1) {
+    const result = await githubRequest(
+      `/user/repos?per_page=100&page=${page}&sort=updated&affiliation=owner,collaborator,organization_member`,
+      { token }
+    );
+    if (!Array.isArray(result)) break;
+
+    repositories.push(...result.map((repo) => ({
+      fullName: repo.full_name,
+      name: repo.name,
+      owner: repo.owner?.login || '',
+      private: Boolean(repo.private),
+      archived: Boolean(repo.archived),
+      defaultBranch: repo.default_branch || 'main'
+    })));
+
+    if (result.length < 100) break;
+  }
+
+  const unique = [...new Map(repositories.map((repo) => [repo.fullName, repo])).values()];
+  return {
+    ok: true,
+    repositories: unique.sort((a, b) => a.fullName.localeCompare(b.fullName))
+  };
+}
+
+async function verifyRepository({ token, repository }) {
+  if (!token) throw new Error('GitHub 토큰이 없습니다.');
+  if (!/^[^/\s]+\/[^/\s]+$/.test(repository || '')) throw new Error('저장소를 먼저 선택하세요.');
+
+  const repo = await githubRequest(`/repos/${repository}`, { token });
+  await assertWriteAccess(repository, token);
+  return {
+    ok: true,
+    fullName: repo.full_name,
+    defaultBranch: repo.default_branch || 'main',
+    private: Boolean(repo.private)
+  };
+}
+
+async function listBranches({ token, repository }) {
+  if (!token) throw new Error('GitHub 토큰이 없습니다.');
+  if (!repository) throw new Error('저장소를 먼저 선택하세요.');
+
+  const repo = await githubRequest(`/repos/${repository}`, { token });
+  const result = await githubRequest(`/repos/${repository}/branches?per_page=100`, { token });
+  return {
+    ok: true,
+    defaultBranch: repo.default_branch || 'main',
+    branches: Array.isArray(result) ? result.map((item) => item.name) : []
+  };
+}
+
+async function listFolders({ token, repository, branch, path = '' }) {
+  if (!token) throw new Error('GitHub 토큰이 없습니다.');
+  if (!repository) throw new Error('저장소를 먼저 선택하세요.');
+
+  const repo = await githubRequest(`/repos/${repository}`, { token });
+  const resolvedBranch = branch || repo.default_branch || 'main';
+  const cleanPath = String(path || '').split('/').filter(Boolean).join('/');
+  const encodedPath = encodeRepoPath(cleanPath);
+  const endpoint = `/repos/${repository}/contents${encodedPath ? `/${encodedPath}` : ''}?ref=${encodeURIComponent(resolvedBranch)}`;
+
+  let result;
+  try {
+    result = await githubRequest(endpoint, { token });
+  } catch (error) {
+    if (error.status === 404 && !cleanPath) {
+      return { ok: true, path: '', branch: resolvedBranch, folders: [] };
+    }
+    throw error;
+  }
+
+  const items = Array.isArray(result) ? result : [];
+  return {
+    ok: true,
+    path: cleanPath,
+    branch: resolvedBranch,
+    folders: items
+      .filter((item) => item.type === 'dir')
+      .map((item) => ({ name: item.name, path: item.path, sha: item.sha }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  };
+}
+
 async function uploadSolution(payload) {
   const settings = await getSettings();
   if (!settings.token) throw new Error('GitHub 토큰이 설정되지 않았습니다.');
-  if (!/^[^/\s]+\/[^/\s]+$/.test(settings.repository)) throw new Error('저장소를 owner/repo 형식으로 설정하세요.');
+  if (!/^[^/\s]+\/[^/\s]+$/.test(settings.repository)) throw new Error('저장소를 선택하세요.');
 
   const previous = await chrome.storage.local.get({ lastUploadKey: '' });
   if (previous.lastUploadKey === payload.key) return { ok: true, skipped: true };
 
   const repoInfo = await githubRequest(`/repos/${settings.repository}`, { token: settings.token });
   const branch = settings.branch || repoInfo.default_branch || 'main';
-  const folder = [
-    sanitizePathPart(settings.rootFolder || 'JUNGOL'),
-    `${sanitizePathPart(payload.problem.id)}. ${sanitizePathPart(payload.problem.title)}`
-  ].join('/');
+  const baseFolder = normalizeFolderPath(settings.rootFolder);
+  const problemFolder = `${sanitizePathPart(payload.problem.id)}. ${sanitizePathPart(payload.problem.title)}`;
+  const folder = [baseFolder, problemFolder].filter(Boolean).join('/');
   const ext = languageExtension(payload.language);
   const message = `[JUNGOL] ${payload.problem.id}. ${payload.problem.title}`;
   const files = [
@@ -187,6 +283,8 @@ async function uploadSolution(payload) {
       problemId: payload.problem.id,
       title: payload.problem.title,
       repository: settings.repository,
+      rootFolder: baseFolder,
+      branch,
       at: new Date().toISOString()
     }
   });
@@ -195,7 +293,7 @@ async function uploadSolution(payload) {
 
 async function testConnection(settings) {
   if (!settings.token) throw new Error('토큰을 입력하세요.');
-  if (!/^[^/\s]+\/[^/\s]+$/.test(settings.repository)) throw new Error('저장소는 owner/repo 형식이어야 합니다.');
+  if (!/^[^/\s]+\/[^/\s]+$/.test(settings.repository)) throw new Error('저장소를 선택하세요.');
 
   const repo = await githubRequest(`/repos/${settings.repository}`, { token: settings.token });
   await assertWriteAccess(settings.repository, settings.token);
@@ -213,14 +311,31 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     try {
       if (message?.type === 'SAVE_SETTINGS') {
         const settings = { ...DEFAULT_SETTINGS, ...(message.payload || {}) };
+        settings.rootFolder = normalizeFolderPath(settings.rootFolder);
         await chrome.storage.local.set(settings);
-        sendResponse({ ok: true });
+        sendResponse({ ok: true, settings: { ...settings, token: undefined } });
         return;
       }
       if (message?.type === 'GET_SETTINGS') {
         const settings = await getSettings();
         const { token, ...safe } = settings;
         sendResponse({ ok: true, settings: { ...safe, hasToken: Boolean(token) } });
+        return;
+      }
+      if (message?.type === 'LIST_REPOSITORIES') {
+        sendResponse(await listRepositories(message.payload?.token || ''));
+        return;
+      }
+      if (message?.type === 'VERIFY_REPOSITORY') {
+        sendResponse(await verifyRepository(message.payload || {}));
+        return;
+      }
+      if (message?.type === 'LIST_BRANCHES') {
+        sendResponse(await listBranches(message.payload || {}));
+        return;
+      }
+      if (message?.type === 'LIST_FOLDERS') {
+        sendResponse(await listFolders(message.payload || {}));
         return;
       }
       if (message?.type === 'TEST_CONNECTION') {
