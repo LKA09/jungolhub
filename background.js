@@ -30,9 +30,7 @@ function languageExtension(language = '') {
   if (/swift/.test(value)) return 'swift';
   if (/ruby/.test(value)) return 'rb';
   if (/php/.test(value)) return 'php';
-  if (/ocaml/.test(value)) return 'ml';
-  if (/haskell/.test(value)) return 'hs';
-  if (/elixir/.test(value)) return 'ex';
+  if (/pascal/.test(value)) return 'pas';
   if (/(^|[^+])c([^+]|$)|gcc/.test(value)) return 'c';
   return 'txt';
 }
@@ -50,6 +48,18 @@ function toBase64(text) {
 async function getSettings() {
   const stored = await chrome.storage.local.get(DEFAULT_SETTINGS);
   return { ...DEFAULT_SETTINGS, ...stored };
+}
+
+function writeAccessError(repository, error) {
+  const wrapped = new Error(
+    `GitHub 토큰이 ${repository} 저장소에 쓸 수 없습니다. ` +
+    `Fine-grained PAT의 Repository access에서 '${repository.split('/')[1]}' 저장소를 포함하고 ` +
+    `Repository permissions > Contents를 Read and write로 설정하세요. (${error.message})`
+  );
+  wrapped.status = error.status;
+  wrapped.path = error.path;
+  wrapped.method = error.method;
+  return wrapped;
 }
 
 async function githubRequest(path, { method = 'GET', token, body } = {}) {
@@ -88,18 +98,9 @@ function buildReadme(problem, language) {
     problem.time ? `- 시간 제한: ${problem.time}` : null,
     problem.memory ? `- 메모리 제한: ${problem.memory}` : null,
     '',
-    '## 문제',
-    '',
-    problem.problem || '문제 설명은 JUNGOL 원문을 참고하세요.',
-    '',
-    '## 입력',
-    '',
-    problem.input || 'JUNGOL 원문을 참고하세요.',
-    '',
-    '## 출력',
-    '',
-    problem.output || 'JUNGOL 원문을 참고하세요.',
-    '',
+    '## 문제', '', problem.problem || '문제 설명은 JUNGOL 원문을 참고하세요.', '',
+    '## 입력', '', problem.input || 'JUNGOL 원문을 참고하세요.', '',
+    '## 출력', '', problem.output || 'JUNGOL 원문을 참고하세요.', '',
     '> 자동 업로드: JungolHub'
   ];
   return lines.filter((line) => line !== null).join('\n');
@@ -121,35 +122,37 @@ async function putContentFile({ repository, token, branch, path, content, messag
     if (error.status !== 404) throw error;
   }
 
-  const body = {
-    message,
-    content: toBase64(content)
-  };
+  const body = { message, content: toBase64(content) };
   if (branch) body.branch = branch;
   if (existingSha) body.sha = existingSha;
 
   return githubRequest(`/repos/${repository}/contents/${encodedPath}`, {
-    method: 'PUT',
-    token,
-    body
+    method: 'PUT', token, body
   });
+}
+
+async function assertWriteAccess(repository, token) {
+  try {
+    // Creates an unreachable Git blob only; it does not change any branch or visible file.
+    await githubRequest(`/repos/${repository}/git/blobs`, {
+      method: 'POST', token,
+      body: { content: 'JungolHub permission probe', encoding: 'utf-8' }
+    });
+  } catch (error) {
+    if (error.status === 403 || error.status === 404) throw writeAccessError(repository, error);
+    throw error;
+  }
 }
 
 async function uploadSolution(payload) {
   const settings = await getSettings();
   if (!settings.token) throw new Error('GitHub 토큰이 설정되지 않았습니다.');
-  if (!/^[^/\s]+\/[^/\s]+$/.test(settings.repository)) {
-    throw new Error('저장소를 owner/repo 형식으로 설정하세요.');
-  }
+  if (!/^[^/\s]+\/[^/\s]+$/.test(settings.repository)) throw new Error('저장소를 owner/repo 형식으로 설정하세요.');
 
   const previous = await chrome.storage.local.get({ lastUploadKey: '' });
   if (previous.lastUploadKey === payload.key) return { ok: true, skipped: true };
 
   const repoInfo = await githubRequest(`/repos/${settings.repository}`, { token: settings.token });
-  if (repoInfo.permissions && repoInfo.permissions.push === false) {
-    throw new Error('이 토큰은 대상 저장소에 쓰기(push) 권한이 없습니다.');
-  }
-
   const branch = settings.branch || repoInfo.default_branch || 'main';
   const folder = [
     sanitizePathPart(settings.rootFolder || 'JUNGOL'),
@@ -157,23 +160,25 @@ async function uploadSolution(payload) {
   ].join('/');
   const ext = languageExtension(payload.language);
   const message = `[JUNGOL] ${payload.problem.id}. ${payload.problem.title}`;
-
   const files = [
     { path: `${folder}/README.md`, content: buildReadme(payload.problem, payload.language) },
     { path: `${folder}/${payload.problem.id}.${ext}`, content: payload.code }
   ];
 
-  // Fine-grained PAT과 가장 호환성이 높은 repository contents API만 사용한다.
-  // GitHub 문서 권고대로 파일 쓰기는 직렬로 실행한다.
-  for (const file of files) {
-    await putContentFile({
-      repository: settings.repository,
-      token: settings.token,
-      branch,
-      path: file.path,
-      content: file.content,
-      message
-    });
+  try {
+    for (const file of files) {
+      await putContentFile({
+        repository: settings.repository,
+        token: settings.token,
+        branch,
+        path: file.path,
+        content: file.content,
+        message
+      });
+    }
+  } catch (error) {
+    if (error.status === 403 || error.status === 404) throw writeAccessError(settings.repository, error);
+    throw error;
   }
 
   await chrome.storage.local.set({
@@ -185,27 +190,21 @@ async function uploadSolution(payload) {
       at: new Date().toISOString()
     }
   });
-
   return { ok: true, skipped: false };
 }
 
 async function testConnection(settings) {
   if (!settings.token) throw new Error('토큰을 입력하세요.');
-  if (!/^[^/\s]+\/[^/\s]+$/.test(settings.repository)) {
-    throw new Error('저장소는 owner/repo 형식이어야 합니다.');
-  }
+  if (!/^[^/\s]+\/[^/\s]+$/.test(settings.repository)) throw new Error('저장소는 owner/repo 형식이어야 합니다.');
 
   const repo = await githubRequest(`/repos/${settings.repository}`, { token: settings.token });
-  if (repo.permissions && repo.permissions.push === false) {
-    throw new Error('저장소 읽기는 가능하지만 쓰기 권한이 없습니다.');
-  }
-
+  await assertWriteAccess(settings.repository, settings.token);
   return {
     ok: true,
     fullName: repo.full_name,
     defaultBranch: repo.default_branch,
     private: repo.private,
-    push: repo.permissions?.push !== false
+    writeVerified: true
   };
 }
 
@@ -218,26 +217,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({ ok: true });
         return;
       }
-
       if (message?.type === 'GET_SETTINGS') {
         const settings = await getSettings();
         const { token, ...safe } = settings;
         sendResponse({ ok: true, settings: { ...safe, hasToken: Boolean(token) } });
         return;
       }
-
       if (message?.type === 'TEST_CONNECTION') {
-        const result = await testConnection(message.payload || {});
-        sendResponse(result);
+        sendResponse(await testConnection(message.payload || {}));
         return;
       }
-
       if (message?.type === 'UPLOAD_SOLUTION') {
-        const result = await uploadSolution(message.payload || {});
-        sendResponse(result);
+        sendResponse(await uploadSolution(message.payload || {}));
         return;
       }
-
       sendResponse({ ok: false, error: 'Unknown message' });
     } catch (error) {
       console.error('[JungolHub]', error);
